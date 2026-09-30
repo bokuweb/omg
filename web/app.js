@@ -18,7 +18,7 @@ function renderModelOptions() {
   for (const o of $("model").options) {
     const m = MODELS[o.value];
     o.disabled = unpublished.has(o.value);
-    o.textContent = `${o.value}  ·  ${m.size}  ·  ${m.note}${cached.has(m.id) ? "  ·  cached" : ""}${o.disabled ? "  ·  not published yet" : ""}`;
+    o.textContent = `${o.value}  ·  ${m.size}  ·  ${m.note}${(cached.has(m.id) || cached.has(m.hub)) ? "  ·  cached" : ""}${o.disabled ? "  ·  not published yet" : ""}`;
   }
 }
 for (const [k] of Object.entries(MODELS)) {
@@ -31,7 +31,7 @@ renderModelOptions();
 for (const [k, m] of Object.entries(MODELS)) {
   if (!m.hub || params.get("base")) continue; // ?base= points at a local copy
   whereIs(m).then((where) => {
-    if (where || cached.has(m.id)) return;
+    if (where || (cached.has(m.id) || cached.has(m.hub))) return;
     unpublished.add(k);
     renderModelOptions();
     if ($("model").value === k) {
@@ -107,8 +107,9 @@ function setPreset(name) {
   syncState(); syncQuestions();
 }
 $("preset").addEventListener("change", (e) => setPreset(e.target.value));
-setPreset("contract");
-$("preset").value = "contract";
+const initialPreset = MODELS[$("model").value].kind === "bekko" ? "bekko" : "contract";
+setPreset(initialPreset);
+$("preset").value = initialPreset;
 $("temp").addEventListener("input", (e) => ($("tempv").textContent = Number(e.target.value).toFixed(1)));
 
 for (const b of $("mode").querySelectorAll("button")) {
@@ -127,21 +128,29 @@ function setStatus(text, pct, cls = "") {
   $("bar").style.width = pct == null ? "0%" : `${Math.round(pct)}%`;
 }
 
-// Loaded engines stay resident, keyed by model, so switching back to a model
+// Loaded engines stay resident, keyed by model and device, so switching back to a model
 // that was already loaded is instant (no re-fetch, no re-init).
 const engines = new Map();
 let loading = false;
 
+const selectedDevice = () => MODELS[$("model").value].kind === "bekko" ? $("device").value : "webgpu";
+const engineKey = () => `${$("model").value}:${selectedDevice()}`;
 function selectModel() {
   const model = $("model").value;
-  engine = engines.get(model) ?? null;
+  const bekko = MODELS[model].kind === "bekko";
+  $("device-field").hidden = !bekko;
+  $("bekko-note").hidden = !bekko;
+  $("orders").disabled = bekko;
+  $("calibrate").disabled = bekko;
+  for (const button of $("mode").querySelectorAll("button")) button.disabled = bekko;
+  engine = engines.get(engineKey()) ?? null;
   window.omgEngine = engine; // for the console
   $("run").disabled = !engine;
   if (engine) {
-    setStatus(`${engine.spec.id} loaded (WebGPU, ${engine.spec.dtype})`, null, "ok");
+    setStatus(`${engine.spec.id} loaded (${engine.device === "cpu" ? "CPU / WASM" : engine.spec.kind === "bekko" ? "WebGPU + CPU fallback" : "WebGPU"}, ${engine.spec.dtype})`, null, "ok");
     $("load").textContent = "Loaded";
     $("load").disabled = true;
-  } else if (cached.has(MODELS[model].id)) {
+  } else if ((cached.has(MODELS[model].id) || cached.has(MODELS[model].hub))) {
     setStatus(`Not loaded. Weights are cached in this browser; loading needs no download.`);
     $("load").textContent = "Load model";
     $("load").disabled = loading;
@@ -152,22 +161,26 @@ function selectModel() {
   }
 }
 $("model").addEventListener("change", selectModel);
+$("device").addEventListener("change", selectModel);
+$("bekko-preset").addEventListener("click", () => { setPreset("bekko"); $("preset").value = "bekko"; });
 selectModel();
 refreshCache().then(selectModel);
 
 $("load").addEventListener("click", async () => {
   const model = $("model").value;
-  if (engines.has(model) || loading) return;
+  const key = engineKey(), device = selectedDevice();
+  if (engines.has(key) || loading) return;
   loading = true;
   $("load").disabled = true;
+  $("device").disabled = true;
   $("model").disabled = true; // the progress line belongs to this model
   try {
-    if (!navigator.gpu) throw new Error("WebGPU is not available in this browser (Chrome / Edge, Safari 26+).");
-    transformers ??= await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0");
+    if (device === "webgpu" && !navigator.gpu) throw new Error("WebGPU is not available in this browser (Chrome / Edge, Safari 26+).");
+    if (MODELS[model].kind !== "bekko") transformers ??= await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0");
     const files = new Map();
     setStatus(`Fetching ${MODELS[model].id}…`, 0);
     const loaded = await loadEngine({
-      transformers, model, modelBase: params.get("base") ?? undefined,
+      transformers, model, device, modelBase: params.get("base") ?? undefined,
       onProgress: (info) => {
         if (info.status === "progress") {
           files.set(info.file, [info.loaded ?? 0, info.total ?? 0]);
@@ -177,14 +190,16 @@ $("load").addEventListener("click", async () => {
         } else if (info.status === "ready") setStatus("Initializing…", 100);
       },
     });
-    engines.set(model, loaded);
+    engines.set(key, loaded);
     loading = false;
     $("model").disabled = false;
+    $("device").disabled = false;
     await refreshCache();
     selectModel();
   } catch (e) {
     loading = false;
     $("model").disabled = false;
+    $("device").disabled = false;
     setStatus(`Failed to load: ${e.message}`, null, "err");
     $("load").disabled = false;
     console.error(e);
@@ -222,7 +237,7 @@ function renderResults(request, resp) {
   const u = resp.usage;
   const how = u.state_source === "ram" ? "restored" : u.state_resident ? "resident" : "cold";
   const state = u.state_resident === undefined ? `state ${u.state_tokens}` : `state ${u.state_tokens} ${how}`;
-  const chips = [`${u.ms.toFixed(0)} ms`, u.mode, `${u.forwards} forward${u.forwards === 1 ? "" : "s"}`, `${u.input_tokens} tokens (${state})`, `${u.questions} question${u.questions === 1 ? "" : "s"}`];
+  const chips = [`${u.ms.toFixed(0)} ms`, u.mode, `${u.forwards} forward${u.forwards === 1 ? "" : "s"}`, `${u.input_tokens} tokens${u.state_tokens == null ? "" : ` (${state})`}`, `${u.questions} question${u.questions === 1 ? "" : "s"}`];
   if (u.calibrated) chips.push(u.baseline_forwards ? `calibrated (baseline ${u.baseline_forwards} forward${u.baseline_forwards === 1 ? "" : "s"})` : "calibrated (baseline cached)");
   if (u.orders > 1) chips.push(`${u.orders} orders, ${u.branches} branches`);
   const twoStage = Object.keys(resp.diagnostics.two_stage ?? {});

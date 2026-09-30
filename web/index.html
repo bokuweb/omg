@@ -45,6 +45,7 @@
 
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); min-width: 0; max-width: 100%; }
+  .field[hidden] { display: none; }
   select, button { font: inherit; font-size: 13px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); padding: 0 12px; }
   select { max-width: 100%; min-width: 0; padding-right: 28px; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
   select:focus, button:focus-visible, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -127,7 +128,7 @@
 
   <section class="hero">
     <h1>Typed questions in, calibrated probabilities out.</h1>
-    <p>Give the model a <code>state</code> and a set of typed questions (<code>choice</code>, <code>score</code>, <code>noul</code>). Every question is answered in a single forward pass with no text generation: the answer is read straight from the label logits. Everything runs on your GPU through WebGPU; nothing leaves the browser.</p>
+    <p>Give the model a <code>state</code> and a set of typed questions (<code>choice</code>, <code>score</code>, <code>noul</code>). Models answer without text generation. Everything runs locally through WebGPU, or on the CPU with Bekko; your inputs stay in the browser.</p>
   </section>
 
   <section class="card">
@@ -137,9 +138,11 @@
     <div class="card-body">
       <div class="row">
         <select id="model" aria-label="Model"></select>
+        <label id="device-field" class="field" hidden>Device <select id="device" aria-label="Device"><option value="cpu">CPU (WASM)</option><option value="webgpu">WebGPU + CPU fallback</option></select></label>
         <button id="load" class="primary">Load model</button>
         <span id="status">Not loaded. Weights stream from the Hugging Face Hub and are cached by the browser.</span>
       </div>
+      <p id="bekko-note" hidden>Bekko is an experimental English decision model (2–64 options per question). Each question uses its trained task head; mode, calibration and order averaging do not apply. Long inputs are truncated to the model’s token limits. <button id="bekko-preset" class="link">Use English example</button> · <a href="https://huggingface.co/spaces/hotchpotch/bekko-system-one-in-browser" target="_blank" rel="noopener">Original demo</a></p>
       <div id="barwrap" hidden><div id="bar"></div></div>
       <div class="cache" hidden><span id="cache"></span><button id="clear" class="link">Clear cache</button></div>
     </div>
@@ -173,7 +176,7 @@
   <div id="results" class="results"></div>
   <details open><summary>Response JSON</summary><pre id="raw"></pre></details>
 
-  <footer>Zero-shot label readout on Gemma 3 / Gemma 4 ONNX via transformers.js. The request validation, prompt layout and probability math are the same Rust crate as the native runtime, compiled to wasm.</footer>
+  <footer>Gemma and encoder models run on omg’s WebGPU engine. Bekko uses ONNX Runtime Web on CPU or WebGPU. Request validation and probability math share the native Rust runtime, compiled to wasm.</footer>
 </main>
 <script type="module" src="./app.js"></script>
 </body>

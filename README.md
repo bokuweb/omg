@@ -10,11 +10,13 @@ one isolated branch per question, a readout at each branch's answer position.
 omg targets Japanese, Gemma 4, quantized local inference, and (later) the
 browser. Design notes live in `life/idea/local-jev`.
 
-**Demo:** https://bokuweb.github.io/omg/ (WebGPU; nothing leaves the browser).
+**Demo:** https://bokuweb.github.io/omg/ (WebGPU, or CPU with Bekko; inputs stay in the browser).
 Gemma 4 E2B or E4B zero-shot on omg's own wgpu engine with a 25k-token
 vocabulary: 1.2 GB / 2.5 GB streamed from the Hub once and cached in the
 browser, 5 questions over a 90-token state in ~1.1 s (E2B) / ~2.5 s (E4B)
 on an M4.
+The demo also offers [Bekko System One](web/README.md#bekko-system-one)
+17M / 68M / 400M English decision models on CPU or WebGPU, starting at 29 MB.
 
 ## Status
 

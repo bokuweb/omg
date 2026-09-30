@@ -20,7 +20,7 @@ python3 -m http.server 8765 --directory web
 open "http://localhost:8765/"
 ```
 
-The page offers five models: `gemma-4-e2b-wgpu-ja` (the default) and
+In addition to the three Bekko models below, the page offers five models: `gemma-4-e2b-wgpu-ja` (the default) and
 `gemma-4-e4b-wgpu-ja`, Gemma 4 E2B / E4B on omg's own wgpu engine, and
 `laya-multilingual-wgpu`, Convai's Laya (mmBERT encoder + decision head,
 docs/laya.md) on the same engine — 180 MB (Q8, 56k-token vocabulary,
@@ -48,6 +48,47 @@ the trained 270M pointer model — so an entry can be put back in `MODELS`
 (specs in git history); the sections below describe those paths too.
 Gemma 4 ONNX models are loaded text-only (`Gemma4ForCausalLM`): the audio
 and vision encoder shards (270 MB for E2B) are never fetched.
+
+## Bekko System One
+
+Choose `bekko-system-one-17m`, `bekko-system-one-68m`, or
+`bekko-system-one-400m`, then **Load model** and **Use English example**.
+[Open the 17M demo](https://bokuweb.github.io/omg/?model=bekko-system-one-17m)
+to start with the English product-review preset (choice, noul, and score).
+CPU / WASM is the default; **Device** also offers WebGPU with CPU fallback.
+The downloads are approximately 29 MB, 196 MB, and 1.43 GB respectively;
+inference needs additional memory, especially with long inputs.
+
+This integrates [hotchpotch's browser demo](https://huggingface.co/spaces/hotchpotch/bekko-system-one-in-browser).
+The models are experimental English decision models, so the Japanese presets
+are not representative examples. Each question accepts 2–64 options.
+The original tokenizer layout, candidate descriptions, noul context wrapper,
+and task-specific logit column are preserved. `omg-core` validates requests,
+owns option ordering, and computes temperature-scaled probabilities,
+confidence, and the score expectation in the usual omg response format.
+Each question runs separately; **Modes**, **Orders**, and **Calibrate** are
+disabled for Bekko. Long instructions/state and candidates are truncated to
+the model manifest's query/document limits (currently 4,096/2,048 tokens).
+
+`bekko-worker.js` loads pinned ONNX Runtime Web 1.30.0 and Hugging Face
+Tokenizers 0.2.0 from jsDelivr. A single-threaded worker keeps CPU inference
+off the UI thread and works on GitHub Pages without cross-origin isolation.
+`bekko.js` pins each model and tokenizer to one Hub revision; assets use the
+same IndexedDB cache and **Clear cache** control as the other models. Runtime
+scripts still require network access or the browser's HTTP cache on reload.
+For local weights, `?base=/models/&model=bekko-system-one-17m` reads
+`/models/bekko-system-one-17m/{manifest.json,tokenizer.json,tokenizer_config.json,model.onnx}`
+(the contents of the upstream `onnx_browser` directory).
+The adapted tokenizer/inference helpers retain their upstream MIT license in
+[`bekko-LICENSE.txt`](bekko-LICENSE.txt).
+
+Run the adapter tests without installing npm dependencies:
+
+```bash
+node --experimental-default-type=module --test web/bekko.test.mjs
+```
+
+## Existing engines
 
 What runs where:
 
