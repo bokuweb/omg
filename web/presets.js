@@ -1,5 +1,15 @@
 // Demo presets. `group` becomes an <optgroup>; the tests are last on purpose.
 export const PRESETS = {
+  bekko: {
+    group: "English",
+    label: "Bekko: product review (en)",
+    state: { review: "I love these headphones. The sound is clear, the battery lasts all day, and they are comfortable. I would buy them again." },
+    questions: {
+      sentiment: { type: "choice", instructions: "What is the sentiment of this product review?", criteria: { positive: "The reviewer is satisfied with the product.", negative: "The reviewer is dissatisfied with the product.", neutral: "The reviewer expresses neither satisfaction nor dissatisfaction." } },
+      recommends: { type: "noul", instructions: "Does the reviewer recommend this product?" },
+      satisfaction: { type: "score", instructions: "How satisfied is the reviewer with this product?", criteria: ["Very dissatisfied", "Somewhat dissatisfied", "Neither satisfied nor dissatisfied", "Somewhat satisfied", "Very satisfied"] },
+    },
+  },
   ticket: {
     group: "Business",
     label: "Support ticket triage (ja)",

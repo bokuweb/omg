@@ -59,7 +59,7 @@ export async function cachedModelIds() {
   const ids = new Set();
   try {
     for (const k of await idbCache.keys()) {
-      const m = /^https:\/\/huggingface\.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/onnx\/.+\.onnx(_data(_\d+)?)?$/.exec(k);
+      const m = /^https:\/\/huggingface\.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/(?:onnx|onnx_browser)\/.+\.onnx(_data(_\d+)?)?$/.exec(k);
       if (m) ids.add(m[1]);
     }
   } catch {}
@@ -79,4 +79,27 @@ export async function cacheUsage() {
 
 export async function clearCache() {
   await tx("readwrite", (s) => s.clear());
+}
+
+// fetch through the same IndexedDB cache transformers.js uses, with progress.
+export async function cachedFetch(url, onProgress) {
+  const hit = await idbCache.match(url).catch(() => undefined);
+  if (hit) return hit;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const total = Number(res.headers.get("content-length") ?? 0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    onProgress?.({ status: "progress", file: url.split("/").slice(-2).join("/"), loaded, total });
+  }
+  const blob = new Blob(chunks);
+  const out = new Response(blob, { status: 200, headers: { "content-length": String(blob.size) } });
+  await idbCache.put(url, out.clone()).catch(() => {});
+  return out;
 }

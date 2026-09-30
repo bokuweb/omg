@@ -15,7 +15,8 @@
 // same questions over a content-free state) before the softmax.
 
 import init, * as omg from "./pkg/omg.js";
-import { idbCache } from "./cache.js";
+import { idbCache, cachedFetch } from "./cache.js";
+import { BEKKO_MODELS, bekkoBase, loadBekko } from "./bekko.js";
 
 const GEMMA4 = { layout: "label", turn_start: "<|turn>", turn_end: "<turn|>", user: "user", model: "model" };
 
@@ -61,6 +62,7 @@ const GEMMA4 = { layout: "label", turn_start: "<|turn>", turn_end: "<turn|>", us
 // JCQA 0.909, 71% agreement with E2B on unseen presets; 70m is ~6x faster
 // and weaker (JNLI 0.898 / JCQA 0.818, 65%). Full vocabulary, Q8.
 export const MODELS = {
+  ...BEKKO_MODELS,
   "gemma-4-e2b-wgpu-ja": { id: "gemma-4-e2b-wgpu-ja", local: true, hub: "bokuweb/gemma-4-E2B-it-grande-wgpu-ja", kind: "wgpu", readout: "label", manifest: true, dtype: "q4", layout: GEMMA4, size: "1.2 GB", note: "E2B, wgpu engine: one pass, 25k-token vocabulary" },
   "gemma-4-e4b-wgpu-ja": { id: "gemma-4-e4b-wgpu-ja", local: true, hub: "bokuweb/gemma-4-E4B-it-grande-wgpu-ja", kind: "wgpu", readout: "label", manifest: true, dtype: "q4", layout: GEMMA4, size: "2.5 GB", note: "E4B, wgpu engine: one pass, 25k-token vocabulary" },
   "laya-multilingual-wgpu": { id: "laya-multilingual-wgpu", local: true, hub: "bokuweb/laya-multilingual-grande-wgpu", kind: "laya", manifest: true, dtype: "q8", size: "180 MB", note: "Laya: mmBERT encoder + decision head, ~20 ms a question, 56k-token vocabulary" },
@@ -138,29 +140,6 @@ function pointerLogits(head, hidden, decideOff, optOffs) {
     for (let i = 0; i < head.dp; i++) dot += k[i] * q[i];
     return dot * scale;
   });
-}
-
-// fetch through the same IndexedDB cache transformers.js uses, with progress.
-async function cachedFetch(url, onProgress) {
-  const hit = await idbCache.match(url);
-  if (hit) return hit;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  const total = Number(res.headers.get("content-length") ?? 0);
-  const reader = res.body.getReader();
-  const chunks = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    onProgress?.({ status: "progress", file: url.split("/").slice(-2).join("/"), loaded, total });
-  }
-  const blob = new Blob(chunks);
-  const out = new Response(blob, { status: 200, headers: { "content-length": String(blob.size) } });
-  await idbCache.put(url, out.clone()).catch(() => {});
-  return out;
 }
 
 // An exported model directory (tools/export_wgpu_gguf.py): manifest.json lists
@@ -378,6 +357,7 @@ function gatherPerLayer(table, ids) {
 // count as available.
 export async function whereIs(spec) {
   const head = (url) => fetch(url, { method: "HEAD", cache: "no-store" }).then((r) => r.ok).catch(() => false);
+  if (spec.kind === "bekko") return await head(`${bekkoBase(spec)}manifest.json`) ? "hub" : null;
   if (await head(new URL(`./models/${spec.id}/config.json`, location.href).href)) return "here";
   if (!spec.hub) return null;
   if (await head(`https://huggingface.co/${spec.hub}/resolve/main/config.json`)) return "hub";
@@ -395,6 +375,10 @@ export async function loadEngine({ transformers, model = "gemma-3-1b", device = 
   await wasmReady;
   const spec = MODELS[model];
   if (!spec) throw new Error(`unknown model ${model}`);
+  if (spec.kind === "bekko") {
+    navigator.storage?.persist?.().catch(() => {});
+    return loadBekko({ spec, device, onProgress, modelBase, omg });
+  }
   // Weights persist in IndexedDB across visits (see cache.js); ask the browser
   // not to evict them under storage pressure.
   transformers.env.useCustomCache = true;
