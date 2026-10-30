@@ -160,6 +160,10 @@ def main():
 
     r = GGUFReader(a.model)
     F = {f.name: f for f in r.fields.values()}
+    arch = bytes(F["general.architecture"].parts[F["general.architecture"].data[0]]).decode()
+    if arch not in {"gemma3", "gemma4"}:
+        ap.error(f"vocabulary pruning only supports Gemma 3/4, got {arch!r}; "
+                 "for Bonsai use the official PTQ1_0 packing instead")
     tokens = field_str_array(F["tokenizer.ggml.tokens"])
     scores = (
         np.array([F["tokenizer.ggml.scores"].parts[i][0] for i in F["tokenizer.ggml.scores"].data], dtype=np.float32)

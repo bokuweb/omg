@@ -90,6 +90,23 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    /// Bound the allocation-heavy settings for a small native CPU machine.
+    /// This is a cap: command-specific smaller values are preserved.
+    pub fn cpu_low_memory(mut self) -> Self {
+        self.n_ctx = self.n_ctx.min(2048);
+        self.n_batch = self.n_batch.min(64);
+        self.n_ubatch = self.n_ubatch.min(64);
+        self.n_seq_max = self.n_seq_max.min(8);
+        self.n_gpu_layers = 0;
+        self.n_threads = 4;
+        self.state_cache_bytes = 0;
+        self.state_cache_dir = None;
+        self.batch_requests = false;
+        self
+    }
+}
+
 /// LRU of serialized sequence states keyed by the exact prefix tokens.
 struct StateCache {
     budget: usize,
@@ -214,6 +231,10 @@ impl LlamaEngine {
             .with_n_seq_max(opts.n_seq_max)
             .with_n_threads(opts.n_threads)
             .with_n_threads_batch(opts.n_threads)
+            // Zero GPU layers must also disable KQV and opportunistic op
+            // offload; otherwise a CPU model can still compute on Metal.
+            .with_offload_kqv(opts.n_gpu_layers != 0)
+            .with_op_offload(opts.n_gpu_layers != 0)
             .with_swa_full(opts.swa_full)
             // One shared cell pool: `seq_cp` then only adds a sequence id to
             // the prefix cells (no copy), and n_ctx is the request's total
@@ -390,7 +411,8 @@ impl LlamaEngine {
 
     /// Decode every group's branches, and its prefix first when it is not
     /// resident, in as few `llama_decode` calls as `n_batch` allows (one,
-    /// normally). Group g's sequence ids start at `seq_base[g]`: its prefix
+    /// normally for attention-only models; hybrid branches stay separate).
+    /// Group g's sequence ids start at `seq_base[g]`: its prefix
     /// is `seq_base`, branch b is `seq_base + 1 + b`.
     ///
     /// A prefix decoded here is added with every sequence id of its group at
@@ -407,6 +429,10 @@ impl LlamaEngine {
         want: Want,
     ) -> anyhow::Result<Vec<Vec<BranchOutput>>> {
         let n_batch = self.opts.n_batch as usize;
+        // Hybrid/recurrent kernels depend on the sequence composition of a
+        // microbatch. Keep prefix and branch decode boundaries identical to
+        // individual evaluation; sharing the resident prefix is still safe.
+        let isolated_decode = self.model().is_hybrid() || self.model().is_recurrent();
         let mut outputs: Vec<Vec<BranchOutput>> = groups
             .iter()
             .map(|g| {
@@ -436,6 +462,9 @@ impl LlamaEngine {
                     batch.add(LlamaToken(t.0), pos as i32, &seqs, false)?;
                 }
             }
+            if isolated_decode && batch.n_tokens() > 0 {
+                self.flush(&mut batch, &mut pending, &mut outputs, want)?;
+            }
             for (bi, b) in g.branches.iter().enumerate() {
                 let seq = base + 1 + bi as i32;
                 if !decode_prefix {
@@ -454,6 +483,9 @@ impl LlamaEngine {
                         let (slot, _) = want_iter.next().unwrap();
                         pending.push((gi, bi, slot, batch.n_tokens() as usize - 1));
                     }
+                }
+                if isolated_decode && batch.n_tokens() > 0 {
+                    self.flush(&mut batch, &mut pending, &mut outputs, want)?;
                 }
             }
         }
@@ -558,8 +590,8 @@ impl Backend for LlamaEngine {
         Ok(outs.pop().expect("one output per group").branches)
     }
 
-    /// Every group in one `llama_decode`: the group whose prefix is resident
-    /// (or restorable) runs in sequence 0 and shares it, every other group
+    /// Batch groups when the backend supports it: the resident/restorable
+    /// group runs in sequence 0 and shares its prefix, every other group
     /// gets a run of fresh sequence ids and decodes its prefix into them.
     /// Afterwards only sequence 0 (the first group's prefix) stays; every
     /// decoded prefix is in the state cache.
@@ -571,7 +603,14 @@ impl Backend for LlamaEngine {
         if groups.is_empty() {
             return Err(Error::Backend("empty request".into()));
         }
-        if groups.len() > 1 && !self.opts.batch_requests {
+        // The Prism hybrid/recurrent path does not preserve logits when
+        // unrelated request prefixes share a decode. Keep branch packing
+        // within a request, but serialize requests even if batching is on.
+        if groups.len() > 1
+            && (!self.opts.batch_requests
+                || self.model().is_hybrid()
+                || self.model().is_recurrent())
+        {
             let mut out = Vec::with_capacity(groups.len());
             for g in groups {
                 out.push(GroupOutput {
@@ -637,6 +676,13 @@ impl Backend for LlamaEngine {
         // stay resident for the next request over the same state.
         for seq in 1..next {
             self.ctx.kv_cache_seq_rm(seq, None, None).ok();
+        }
+        if out.is_err() || remembered.is_err() {
+            // A failed decode may already have changed recurrent state. Never
+            // advertise it as the old resident prefix on the next request.
+            self.ctx.clear_kv_cache();
+            self.resident_prefix = None;
+            self.last_source = None;
         }
         let outs = out?;
         remembered?;
@@ -704,6 +750,117 @@ fn neutralize_specials(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::neutralize_specials;
+
+    // A real hybrid/recurrent model is required: a fake attention backend
+    // cannot catch seq_cp/state serialization regressions. Never download in CI.
+    #[test]
+    #[ignore = "set OMG_BONSAI_MODEL to the pinned Bonsai 2 GGUF (see docs/bonsai-cpu.md)"]
+    fn bonsai_cpu_branch_isolation_and_prefix_cache() {
+        use super::*;
+        let path = std::env::var_os("OMG_BONSAI_MODEL").expect("OMG_BONSAI_MODEL");
+        let dir = std::env::temp_dir().join(format!("omg-bonsai-state-{}", std::process::id()));
+        let mut opts = Options::default().cpu_low_memory();
+        opts.n_batch = 64; // force multiple native decode calls
+        opts.state_cache_dir = Some(dir.clone());
+        opts.state_cache_bytes = 128 << 20;
+        opts.batch_requests = true;
+        let mut engine = LlamaEngine::load(Path::new(&path), opts).unwrap();
+        assert!(engine.model().is_hybrid());
+        let mut prefix = vec![engine.special("<|im_start|>").unwrap()];
+        prefix.extend(
+            engine
+                .tokenize(&format!(
+                    "user\n{}",
+                    "売上の振込が3回連続で失敗し、外注先への支払いが止まっています。金曜までに直らなければ他社に乗り換えます。".repeat(4)
+                ))
+                .unwrap(),
+        );
+        let branches: Vec<_> = [
+            "Question: この問い合わせを担当すべきチームはどれか。A: 振込・返金・請求・決済の失敗 B: ログイン・プロフィール・権限・二要素認証 C: それ以外。Answer with one letter.",
+            "Question: 顧客は解約や他社への乗り換えを示唆しているか。A: はい B: いいえ。Answer with one letter.",
+        ]
+            .iter()
+            .map(|q| {
+                let mut tokens = engine.tokenize(q).unwrap();
+                tokens.push(engine.special("<|im_end|>").unwrap());
+                tokens.extend(engine.tokenize("\n").unwrap());
+                tokens.push(engine.special("<|im_start|>").unwrap());
+                tokens.extend(engine.tokenize("assistant\n").unwrap());
+                tokens.push(engine.special("<think>").unwrap());
+                tokens.extend(engine.tokenize("\n\n").unwrap());
+                tokens.push(engine.special("</think>").unwrap());
+                tokens.extend(engine.tokenize("\n\n").unwrap());
+                BranchTokens {
+                    want: vec![tokens.len() - 1],
+                    tokens,
+                }
+            })
+            .collect();
+        let compare = |a: &[BranchOutput], b: &[BranchOutput]| {
+            assert_eq!(a.len(), b.len());
+            let mut worst = 0.0_f32;
+            for (a, b) in a.iter().zip(b) {
+                assert_eq!(a.rows.len(), b.rows.len());
+                for (a, b) in a.rows.iter().zip(&b.rows) {
+                    assert_eq!(a.len(), b.len());
+                    for (&a, &b) in a.iter().zip(b) {
+                        assert!(a.is_finite() && b.is_finite());
+                        worst = worst.max((a - b).abs());
+                    }
+                }
+            }
+            eprintln!("Bonsai max logit delta: {worst:.6}");
+            assert!(worst < 0.02, "branch/cache contamination: {worst}");
+        };
+        let packed = engine.evaluate(&prefix, &branches, Want::Logits).unwrap();
+        assert_eq!(engine.prefix_source(), Some(PrefixSource::Decoded));
+        let resident = engine.evaluate(&prefix, &branches, Want::Logits).unwrap();
+        assert_eq!(engine.prefix_source(), Some(PrefixSource::Resident));
+        compare(&packed, &resident);
+        for (i, branch) in branches.iter().enumerate() {
+            engine.evict_resident();
+            let isolated = engine
+                .evaluate(&prefix, std::slice::from_ref(branch), Want::Logits)
+                .unwrap();
+            assert_eq!(engine.prefix_source(), Some(PrefixSource::Ram));
+            compare(std::slice::from_ref(&packed[i]), &isolated);
+        }
+        engine.states = StateCache::new(0);
+        engine.evict_resident();
+        let disk = engine.evaluate(&prefix, &branches, Want::Logits).unwrap();
+        assert_eq!(engine.prefix_source(), Some(PrefixSource::Disk));
+        compare(&packed, &disk);
+        let other = engine.tokenize("user\nA different state. ").unwrap();
+        let other_result = engine.evaluate(&other, &branches, Want::Logits).unwrap();
+        let groups = engine
+            .evaluate_many(
+                &[
+                    Group {
+                        prefix: &prefix,
+                        branches: &branches,
+                    },
+                    Group {
+                        prefix: &other,
+                        branches: &branches,
+                    },
+                ],
+                Want::Logits,
+            )
+            .unwrap();
+        compare(&packed, &groups[0].branches);
+        compare(&other_result, &groups[1].branches);
+        engine.opts.state_cache_dir = None;
+        for (i, branch) in branches.iter().enumerate() {
+            engine.evict_resident();
+            let cold = engine
+                .evaluate(&prefix, std::slice::from_ref(branch), Want::Logits)
+                .unwrap();
+            assert_eq!(engine.prefix_source(), Some(PrefixSource::Decoded));
+            compare(std::slice::from_ref(&packed[i]), &cold);
+        }
+        drop(engine);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn specials_in_user_text_are_broken_up() {

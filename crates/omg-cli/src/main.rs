@@ -14,6 +14,9 @@ use omg_llama::{LlamaEngine, Options};
     about = "Typed questions in, probabilities out, one pass."
 )]
 struct Cli {
+    /// Native GGUF CPU only; cap context/batch/sequences and disable serialized state caching.
+    #[arg(long, global = true)]
+    cpu_low_memory: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -381,8 +384,18 @@ fn readout_for(backend: &dyn Backend, head: Option<&PathBuf>) -> Result<(Rendere
             // The head's metadata says which layout produced its training
             // rows; a head without it is a LoRA-era delimiter-layout head.
             let renderer = match layout.as_deref() {
-                Some("gemma_label_pointer") => label_renderer(backend).pointer(true),
-                _ => Renderer::gemma_pointer(),
+                Some("gemma_label_pointer") | Some("chatml_label_pointer") => {
+                    let renderer = label_renderer(backend).pointer(true);
+                    anyhow::ensure!(
+                        Some(renderer.layout_name()) == layout.as_deref(),
+                        "head layout does not match model chat layout"
+                    );
+                    renderer
+                }
+                _ => {
+                    anyhow::ensure!(backend.special("<|im_start|>").is_err(), "Bonsai requires a head trained with chatml_label_pointer; use label readout without --head");
+                    Renderer::gemma_pointer()
+                }
             };
             Ok((renderer, Readout::Pointer(h)))
         }
@@ -390,9 +403,11 @@ fn readout_for(backend: &dyn Backend, head: Option<&PathBuf>) -> Result<(Rendere
     }
 }
 
-/// Gemma 4 uses <|turn>; Gemma 3 checkpoints use <start_of_turn>.
+/// Bonsai uses ChatML; Gemma 4 uses <|turn>, Gemma 3 <start_of_turn>.
 fn label_renderer(backend: &dyn Backend) -> Renderer {
-    if backend.special("<|turn>").is_ok() {
+    if backend.special("<|im_start|>").is_ok() {
+        Renderer::bonsai_label()
+    } else if backend.special("<|turn>").is_ok() {
         Renderer::gemma_label()
     } else {
         Renderer::gemma3_label()
@@ -427,7 +442,23 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    let configure = |opts: Options| {
+        if cli.cpu_low_memory {
+            opts.cpu_low_memory()
+        } else {
+            opts
+        }
+    };
+    let load_backend = |path: &Path, opts: Options| {
+        anyhow::ensure!(
+            !cli.cpu_low_memory || !path.is_dir(),
+            "--cpu-low-memory requires a native GGUF file"
+        );
+        load_backend(path, configure(opts))
+    };
+    let load_llama = |path: &Path, opts: Options| LlamaEngine::load(path, configure(opts));
+    match cli.cmd {
         Cmd::Jglue {
             model,
             task,
@@ -921,7 +952,7 @@ fn main() -> Result<()> {
         }
         Cmd::Mechanism { model, head } => {
             use serde_json::json;
-            let backend = LlamaEngine::load(
+            let backend = load_llama(
                 &model,
                 Options {
                     n_ctx: 4096,
@@ -1111,7 +1142,7 @@ fn main() -> Result<()> {
         } => {
             let req: Request = serde_json::from_slice(&std::fs::read(&request)?)?;
             req.validate()?;
-            let backend = LlamaEngine::load(
+            let backend = load_llama(
                 &model,
                 Options {
                     n_ctx: 512,
@@ -1120,7 +1151,7 @@ fn main() -> Result<()> {
                 },
             )?;
             let renderer = match layout {
-                LayoutArg::Label => Renderer::gemma_label(),
+                LayoutArg::Label => label_renderer(&backend),
                 LayoutArg::Pointer => Renderer::gemma_pointer(),
             };
             let engine = Engine::new(backend, renderer.clone(), Readout::Label, "render");
@@ -1178,7 +1209,7 @@ fn main() -> Result<()> {
                 "{} exists; choose a fresh --out",
                 rows_path.display()
             );
-            let backend = LlamaEngine::load(
+            let backend = load_llama(
                 &model,
                 Options {
                     n_ctx,
@@ -1281,7 +1312,7 @@ fn main() -> Result<()> {
             )?;
         }
         Cmd::Meta { model, key } => {
-            let engine = LlamaEngine::load(
+            let engine = load_llama(
                 &model,
                 Options {
                     n_ctx: 512,
@@ -1292,7 +1323,7 @@ fn main() -> Result<()> {
             println!("{}", engine.model().meta_val_str(&key)?);
         }
         Cmd::Pieces { model, ids } => {
-            let engine = LlamaEngine::load(
+            let engine = load_llama(
                 &model,
                 Options {
                     n_ctx: 512,
@@ -1476,7 +1507,7 @@ fn main() -> Result<()> {
             );
         }
         Cmd::Tokens { model, text } => {
-            let engine = LlamaEngine::load(
+            let engine = load_llama(
                 &model,
                 Options {
                     n_ctx: 512,
@@ -1508,6 +1539,10 @@ fn main() -> Result<()> {
             let req: Request = serde_json::from_slice(&std::fs::read(&request)?)
                 .with_context(|| format!("parsing {}", request.display()))?;
             let t0 = Instant::now();
+            anyhow::ensure!(
+                !cli.cpu_low_memory || !model.is_dir(),
+                "--cpu-low-memory requires a native GGUF file"
+            );
             if omg_wgpu::E5Backend::is_e5_dir(&model) {
                 use omg_core::Decider;
                 let mut e5 = omg_wgpu::E5Backend::load(&model, n_ctx as usize, 256)?;

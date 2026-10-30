@@ -61,6 +61,8 @@ export async function cachedModelIds() {
     for (const k of await idbCache.keys()) {
       const m = /^https:\/\/huggingface\.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/(?:onnx|onnx_browser)\/.+\.onnx(_data(_\d+)?)?$/.exec(k);
       if (m) ids.add(m[1]);
+      const gguf = /^https:\/\/huggingface\.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/[^/]+\.gguf$/.exec(k);
+      if (gguf) ids.add(gguf[1]);
     }
   } catch {}
   return ids;
