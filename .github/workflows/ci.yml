@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  native-cpu:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p omg-llama --no-default-features
+      - run: cargo check -p omg-cli --no-default-features
+
   core:
     runs-on: ubuntu-latest
     steps:

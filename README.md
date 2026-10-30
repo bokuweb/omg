@@ -270,6 +270,14 @@ See [docs/comparison.md](docs/comparison.md). Short version, same M4:
 
 ## Usage
 
+For Bonsai 2 4B on a native CPU, including the Windows 8 GB preset, see
+[Bonsai CPU setup](docs/bonsai-cpu.md). Native builds require the pinned
+Prism llama.cpp submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
 ```bash
 # Gemma 4 E2B it, Q4_0 (~2.8 GB)
 mkdir -p models && curl -L -o models/gemma-4-E2B-it-Q4_0.gguf \

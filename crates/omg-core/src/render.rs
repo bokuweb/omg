@@ -95,6 +95,12 @@ pub enum Renderer {
         turn_end: String,
         user: String,
         model: String,
+        /// Gemma needs BOS; Bonsai's Qwen3.5 ChatML does not.
+        #[serde(default = "default_bos")]
+        bos: bool,
+        /// Text after the assistant role, e.g. Qwen3's closed thinking turn.
+        #[serde(default)]
+        assistant_prefix: Vec<Segment>,
         /// Drop the "Question:" / "Answer with one letter." scaffolding: the
         /// branch is the instruction, the lettered options and the model
         /// turn. Fewer tokens per question; the model turn already asks for
@@ -113,6 +119,10 @@ pub enum Renderer {
     Pointer(Delimiters),
 }
 
+fn default_bos() -> bool {
+    true
+}
+
 impl Renderer {
     /// Gemma 4 chat layout: `<bos><|turn>user\n…<turn|>\n<|turn>model\n`.
     /// Thinking stays off (no `<|think|>` in a system turn), so the first
@@ -123,6 +133,8 @@ impl Renderer {
             turn_end: "<turn|>".into(),
             user: "user".into(),
             model: "model".into(),
+            bos: true,
+            assistant_prefix: Vec::new(),
             terse: false,
             pointer: false,
         }
@@ -135,6 +147,28 @@ impl Renderer {
             turn_end: "<end_of_turn>".into(),
             user: "user".into(),
             model: "model".into(),
+            bos: true,
+            assistant_prefix: Vec::new(),
+            terse: false,
+            pointer: false,
+        }
+    }
+
+    /// Bonsai 2 / Qwen3.5 ChatML with thinking explicitly disabled. The readout
+    /// consumes answer-letter logits, so reasoning must already be closed.
+    pub fn bonsai_label() -> Self {
+        Renderer::Label {
+            turn_start: "<|im_start|>".into(),
+            turn_end: "<|im_end|>".into(),
+            user: "user".into(),
+            model: "assistant".into(),
+            bos: false,
+            assistant_prefix: vec![
+                Segment::Special("<think>".into()),
+                Segment::Text("\n\n".into()),
+                Segment::Special("</think>".into()),
+                Segment::Text("\n\n".into()),
+            ],
             terse: false,
             pointer: false,
         }
@@ -159,6 +193,17 @@ impl Renderer {
     /// Short name for logs and summaries.
     pub fn layout_name(&self) -> &'static str {
         match self {
+            Renderer::Label {
+                turn_start,
+                pointer: true,
+                ..
+            } if turn_start == "<|im_start|>" => "chatml_label_pointer",
+            Renderer::Label {
+                turn_start,
+                terse: true,
+                ..
+            } if turn_start == "<|im_start|>" => "chatml_label_terse",
+            Renderer::Label { turn_start, .. } if turn_start == "<|im_start|>" => "chatml_label",
             Renderer::Label { pointer: true, .. } => "gemma_label_pointer",
             Renderer::Label { terse: true, .. } => "gemma_label_terse",
             Renderer::Label { .. } => "gemma_label",
@@ -181,12 +226,19 @@ impl Renderer {
         let state = state_text(&req.state);
         let prefix = match self {
             Renderer::Label {
-                turn_start, user, ..
-            } => vec![
-                Segment::Bos,
-                Segment::Special(turn_start.clone()),
-                Segment::Text(format!("{user}\nState:\n{state}\n\n")),
-            ],
+                turn_start,
+                user,
+                bos,
+                ..
+            } => {
+                let mut prefix = Vec::new();
+                if *bos {
+                    prefix.push(Segment::Bos);
+                }
+                prefix.push(Segment::Special(turn_start.clone()));
+                prefix.push(Segment::Text(format!("{user}\nState:\n{state}\n\n")));
+                prefix
+            }
             Renderer::Pointer(d) => vec![
                 Segment::Bos,
                 Segment::Special(d.state.clone()),
@@ -218,6 +270,7 @@ impl Renderer {
                 turn_start,
                 turn_end,
                 model,
+                assistant_prefix,
                 terse,
                 pointer,
                 ..
@@ -260,6 +313,7 @@ impl Renderer {
                 segments.push(Segment::Text("\n".into()));
                 segments.push(Segment::Special(turn_start.clone()));
                 segments.push(Segment::Text(format!("{model}\n")));
+                segments.extend(assistant_prefix.iter().cloned());
                 marks.push((
                     segments.len() - 1,
                     if *pointer { Mark::Decide } else { Mark::Last },
@@ -336,6 +390,40 @@ fn options_of(q: &Question) -> (Kind, String, Vec<(String, Option<String>)>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bonsai_matches_the_non_thinking_chat_template() {
+        let renderer = Renderer::bonsai_label();
+        let r = renderer.render(&req());
+        assert!(!r.prefix.iter().any(|s| matches!(s, Segment::Bos)));
+        assert!(matches!(&r.prefix[0], Segment::Special(s) if s == "<|im_start|>"));
+        let branch = &r.branches[0];
+        let suffix: String = branch
+            .segments
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .map(|s| match s {
+                Segment::Special(t) | Segment::Text(t) => t.as_str(),
+                Segment::Bos => panic!("ChatML must not insert BOS"),
+            })
+            .collect();
+        assert_eq!(suffix, "<|im_start|>assistant\n<think>\n\n</think>\n\n");
+        assert_eq!(branch.marks, vec![(branch.segments.len() - 1, Mark::Last)]);
+        assert_eq!(renderer.layout_name(), "chatml_label");
+        assert_eq!(renderer.pointer(true).layout_name(), "chatml_label_pointer");
+    }
+
+    #[test]
+    fn old_label_configs_keep_gemma_defaults() {
+        let renderer: Renderer = serde_json::from_value(json!({
+            "layout": "label", "turn_start": "<|turn>", "turn_end": "<turn|>",
+            "user": "user", "model": "model"
+        }))
+        .unwrap();
+        assert!(matches!(renderer.render(&req()).prefix[0], Segment::Bos));
+    }
 
     fn req() -> Request {
         serde_json::from_value(json!({

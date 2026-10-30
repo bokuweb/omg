@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/omg-core", "crates/omg-llama", "crates/omg-eval", "crates/omg-server", "crates/omg-web", "crates/omg-wgpu", "crates/omg-cli"]
+exclude = ["vendor/llama-cpp-sys-2"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,3 +22,8 @@ llama-cpp-2 = { version = "0.1.156", default-features = false }
 
 [profile.release]
 debug = 1
+
+# Bonsai PQ2_0/PTQ1_0 need Prism's packed kernels and Hadamard graph.
+# Keep the Rust API at 0.1.156; pin its C++ implementation as a submodule.
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }
