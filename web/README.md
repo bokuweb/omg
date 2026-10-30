@@ -13,14 +13,17 @@ Nothing is uploaded.
 # build the wasm (once per omg-core change)
 cargo build --release -p omg-web --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-dir web/pkg --out-name omg target/wasm32-unknown-unknown/release/omg_web.wasm
-wasm-opt -Oz -o web/pkg/omg_bg.wasm web/pkg/omg_bg.wasm
+
+# build Bonsai's CPU runtime (Emscripten 6.0.10 + CMake; recursive submodules)
+git submodule update --init --recursive
+bash tools/build_bonsai_web.sh
 
 # serve
 python3 -m http.server 8765 --directory web
 open "http://localhost:8765/"
 ```
 
-In addition to the three Bekko models below, the page offers five models: `gemma-4-e2b-wgpu-ja` (the default) and
+In addition to Bonsai and the three Bekko models below, the page offers five models: `gemma-4-e2b-wgpu-ja` (the default) and
 `gemma-4-e4b-wgpu-ja`, Gemma 4 E2B / E4B on omg's own wgpu engine, and
 `laya-multilingual-wgpu`, Convai's Laya (mmBERT encoder + decision head,
 docs/laya.md) on the same engine — 180 MB (Q8, 56k-token vocabulary,
@@ -48,6 +51,45 @@ the trained 270M pointer model — so an entry can be put back in `MODELS`
 (specs in git history); the sections below describe those paths too.
 Gemma 4 ONNX models are loaded text-only (`Gemma4ForCausalLM`): the audio
 and vision encoder shards (270 MB for E2B) are never fetched.
+
+## Bonsai 2 4B
+
+Choose `bonsai-2-4b-wasm`, click **Load model**, then **Run**. Opening
+[`?model=bonsai-2-4b-wasm`](https://bokuweb.github.io/omg/?model=bonsai-2-4b-wasm)
+selects Bonsai and the short Japanese support-ticket example. The pinned
+official `PTQ1_0` GGUF downloads 950 MB once and is cached in IndexedDB.
+The runtime requires WebAssembly SIMD and enough browser memory for the
+weights and context. It runs on one CPU thread in a Web Worker, without
+WebGPU, a local server, or cross-origin isolation headers. Inputs stay local.
+CPU inference can take minutes; the page shows elapsed time while it runs.
+**Calibrate** defaults to off for Bonsai, and higher **Orders** add inference
+work. On an M4 / 16 GB Mac, the two-question Japanese sample with calibration
+enabled took 182 seconds in Chromium (single CPU thread).
+A single uncalibrated question took 61 seconds cold and 29 seconds with the
+resident state; its label logits matched those from the two-question run.
+
+This compiles the same pinned Prism llama.cpp revision as the native Bonsai
+backend with Emscripten. `bonsai-native/bridge.cpp` loads Blob-backed weights
+via WORKERFS, uses a 2,048-token context and 64-token batches, and keeps the
+state in sequence 0. Each question copies that prefix into sequence 1;
+question branches do not see one another. Only **Shared** mode is supported.
+The complete state plus each rendered question must fit the context; longer
+requests are rejected before decoding. The Rust/WASM core owns the ChatML
+layout, validation, option orders, two-pass choices, calibration and response
+probabilities, as in the native runtime. Uncalibrated requests with the same
+state reuse the resident prefix. Calibration currently recomputes its
+content-free baseline on each run.
+
+For local weights, use `?model=bonsai-2-4b-wasm&base=/models/` and place the
+file at `web/models/bonsai-2-4b-wasm/Ternary-Bonsai-2-4B-PTQ1_0.gguf`.
+The build script accepts an optional build directory, for example
+`bash tools/build_bonsai_web.sh /Volumes/External/omg-bonsai-web`.
+CI compiles this runtime on pull requests; Pages builds and ships it along
+with the Rust/WASM core. Run the browser adapter tests with:
+
+```bash
+node --test web/*.test.mjs
+```
 
 ## Bekko System One
 
@@ -85,7 +127,7 @@ The adapted tokenizer/inference helpers retain their upstream MIT license in
 Run the adapter tests without installing npm dependencies:
 
 ```bash
-node --experimental-default-type=module --test web/bekko.test.mjs
+node --test web/bekko.test.mjs
 ```
 
 ## Existing engines

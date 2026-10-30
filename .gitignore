@@ -5,6 +5,7 @@
 /python/.venv/
 /runs/
 /target
+/build/
 /web/models/
 /web/pkg/
 __pycache__/

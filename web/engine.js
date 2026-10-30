@@ -17,6 +17,7 @@
 import init, * as omg from "./pkg/omg.js";
 import { idbCache, cachedFetch } from "./cache.js";
 import { BEKKO_MODELS, bekkoBase, loadBekko } from "./bekko.js";
+import { BONSAI_MODEL, bonsaiBase, loadBonsai } from "./bonsai.js";
 
 const GEMMA4 = { layout: "label", turn_start: "<|turn>", turn_end: "<turn|>", user: "user", model: "model" };
 
@@ -62,6 +63,7 @@ const GEMMA4 = { layout: "label", turn_start: "<|turn>", turn_end: "<turn|>", us
 // JCQA 0.909, 71% agreement with E2B on unseen presets; 70m is ~6x faster
 // and weaker (JNLI 0.898 / JCQA 0.818, 65%). Full vocabulary, Q8.
 export const MODELS = {
+  [BONSAI_MODEL.id]: BONSAI_MODEL,
   ...BEKKO_MODELS,
   "gemma-4-e2b-wgpu-ja": { id: "gemma-4-e2b-wgpu-ja", local: true, hub: "bokuweb/gemma-4-E2B-it-grande-wgpu-ja", kind: "wgpu", readout: "label", manifest: true, dtype: "q4", layout: GEMMA4, size: "1.2 GB", note: "E2B, wgpu engine: one pass, 25k-token vocabulary" },
   "gemma-4-e4b-wgpu-ja": { id: "gemma-4-e4b-wgpu-ja", local: true, hub: "bokuweb/gemma-4-E4B-it-grande-wgpu-ja", kind: "wgpu", readout: "label", manifest: true, dtype: "q4", layout: GEMMA4, size: "2.5 GB", note: "E4B, wgpu engine: one pass, 25k-token vocabulary" },
@@ -357,6 +359,7 @@ function gatherPerLayer(table, ids) {
 // count as available.
 export async function whereIs(spec) {
   const head = (url) => fetch(url, { method: "HEAD", cache: "no-store" }).then((r) => r.ok).catch(() => false);
+  if (spec.kind === "bonsai") return await head(`${bonsaiBase(spec)}${spec.file}`) ? "hub" : null;
   if (spec.kind === "bekko") return await head(`${bekkoBase(spec)}manifest.json`) ? "hub" : null;
   if (await head(new URL(`./models/${spec.id}/config.json`, location.href).href)) return "here";
   if (!spec.hub) return null;
@@ -375,6 +378,10 @@ export async function loadEngine({ transformers, model = "gemma-3-1b", device = 
   await wasmReady;
   const spec = MODELS[model];
   if (!spec) throw new Error(`unknown model ${model}`);
+  if (spec.kind === "bonsai") {
+    navigator.storage?.persist?.().catch(() => {});
+    return loadBonsai({ spec, onProgress, modelBase, omg });
+  }
   if (spec.kind === "bekko") {
     navigator.storage?.persist?.().catch(() => {});
     return loadBekko({ spec, device, onProgress, modelBase, omg });

@@ -1,5 +1,13 @@
 // Demo presets. `group` becomes an <optgroup>; the tests are last on purpose.
 export const PRESETS = {
+  bonsai: {
+    group: "Business", label: "Bonsai: short support ticket (ja)",
+    state: "顧客からの問い合わせ：売上の振込が3回連続で失敗しています。外注先への支払いが止まっていて困っています。金曜までに直らなければ他社に乗り換えます。",
+    questions: {
+      queue: { type: "choice", instructions: "担当すべきチームはどれか", criteria: { payments: "振込・決済の失敗", account: "ログイン・権限の問題", other: "それ以外" } },
+      churn_risk: { type: "noul", instructions: "顧客は他社への乗り換えを示唆しているか" },
+    },
+  },
   bekko: {
     group: "English",
     label: "Bekko: product review (en)",

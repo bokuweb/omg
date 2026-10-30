@@ -128,7 +128,7 @@
 
   <section class="hero">
     <h1>Typed questions in, calibrated probabilities out.</h1>
-    <p>Give the model a <code>state</code> and a set of typed questions (<code>choice</code>, <code>score</code>, <code>noul</code>). Models answer without text generation. Everything runs locally through WebGPU, or on the CPU with Bekko; your inputs stay in the browser.</p>
+    <p>Give the model a <code>state</code> and a set of typed questions (<code>choice</code>, <code>score</code>, <code>noul</code>). Models answer without text generation. Everything runs locally through WebGPU, or on the CPU with Bonsai or Bekko; your inputs stay in the browser.</p>
   </section>
 
   <section class="card">
@@ -143,6 +143,7 @@
         <span id="status">Not loaded. Weights stream from the Hugging Face Hub and are cached by the browser.</span>
       </div>
       <p id="bekko-note" hidden>Bekko is an experimental English decision model (2–64 options per question). Each question uses its trained task head; mode, calibration and order averaging do not apply. Long inputs are truncated to the model’s token limits. <button id="bekko-preset" class="link">Use English example</button> · <a href="https://huggingface.co/spaces/hotchpotch/bekko-system-one-in-browser" target="_blank" rel="noopener">Original demo</a></p>
+      <p id="bonsai-note" hidden>Bonsai 2 4B runs on CPU in a Web Worker (SIMD, one thread; no WebGPU required). The official PTQ model downloads 950 MB once. State + each question must fit 2,048 tokens. CPU inference can take a while; start with the short example. Calibration runs additional inference. <button id="bonsai-preset" class="link">Use short Japanese example</button></p>
       <div id="barwrap" hidden><div id="bar"></div></div>
       <div class="cache" hidden><span id="cache"></span><button id="clear" class="link">Clear cache</button></div>
     </div>
@@ -176,7 +177,7 @@
   <div id="results" class="results"></div>
   <details open><summary>Response JSON</summary><pre id="raw"></pre></details>
 
-  <footer>Gemma and encoder models run on omg’s WebGPU engine. Bekko uses ONNX Runtime Web on CPU or WebGPU. Request validation and probability math share the native Rust runtime, compiled to wasm.</footer>
+  <footer>Gemma and encoder models run on omg’s WebGPU engine. Bonsai uses Prism’s llama.cpp on CPU / WASM; Bekko uses ONNX Runtime Web on CPU or WebGPU. Request validation and probability math share the native Rust runtime, compiled to wasm.</footer>
 </main>
 <script type="module" src="./app.js"></script>
 </body>

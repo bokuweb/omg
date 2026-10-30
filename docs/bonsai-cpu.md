@@ -1,5 +1,10 @@
 # Bonsai 2 4B on a native CPU
 
+For the browser-only CPU / WASM playground, see
+[Bonsai in the web demo](../web/README.md#bonsai-2-4b). Select
+`bonsai-2-4b-wasm` to try the official 950 MB PTQ model without WebGPU or
+installing the native CLI. The browser context is limited to 2,048 tokens.
+
 OMG can run Prism's Ternary Bonsai 2 4B GGUF through the native llama.cpp
 backend. The model is a Qwen3.5 hybrid (attention plus recurrent layers),
 with Prism's Hadamard activation transforms and packed ternary kernels.

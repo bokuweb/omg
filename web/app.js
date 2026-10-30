@@ -107,7 +107,7 @@ function setPreset(name) {
   syncState(); syncQuestions();
 }
 $("preset").addEventListener("change", (e) => setPreset(e.target.value));
-const initialPreset = MODELS[$("model").value].kind === "bekko" ? "bekko" : "contract";
+const initialPreset = MODELS[$("model").value].kind === "bekko" ? "bekko" : MODELS[$("model").value].kind === "bonsai" ? "bonsai" : "contract";
 setPreset(initialPreset);
 $("preset").value = initialPreset;
 $("temp").addEventListener("input", (e) => ($("tempv").textContent = Number(e.target.value).toFixed(1)));
@@ -133,16 +133,25 @@ function setStatus(text, pct, cls = "") {
 const engines = new Map();
 let loading = false;
 
-const selectedDevice = () => MODELS[$("model").value].kind === "bekko" ? $("device").value : "webgpu";
+const selectedDevice = () => MODELS[$("model").value].kind === "bekko" ? $("device").value : MODELS[$("model").value].kind === "bonsai" ? "cpu" : "webgpu";
 const engineKey = () => `${$("model").value}:${selectedDevice()}`;
+let previousKind;
 function selectModel() {
   const model = $("model").value;
   const bekko = MODELS[model].kind === "bekko";
+  const bonsai = MODELS[model].kind === "bonsai";
+  if (bonsai && previousKind !== "bonsai") $("calibrate").checked = false;
+  previousKind = MODELS[model].kind;
   $("device-field").hidden = !bekko;
   $("bekko-note").hidden = !bekko;
+  $("bonsai-note").hidden = !bonsai;
   $("orders").disabled = bekko;
   $("calibrate").disabled = bekko;
-  for (const button of $("mode").querySelectorAll("button")) button.disabled = bekko;
+  for (const button of $("mode").querySelectorAll("button")) {
+    button.disabled = bekko || bonsai;
+    if (bonsai) button.classList.toggle("on", button.dataset.mode === "shared");
+    else button.classList.toggle("on", button.dataset.mode === mode);
+  }
   engine = engines.get(engineKey()) ?? null;
   window.omgEngine = engine; // for the console
   $("run").disabled = !engine;
@@ -163,6 +172,7 @@ function selectModel() {
 $("model").addEventListener("change", selectModel);
 $("device").addEventListener("change", selectModel);
 $("bekko-preset").addEventListener("click", () => { setPreset("bekko"); $("preset").value = "bekko"; });
+$("bonsai-preset").addEventListener("click", () => { setPreset("bonsai"); $("preset").value = "bonsai"; });
 selectModel();
 refreshCache().then(selectModel);
 
@@ -176,7 +186,7 @@ $("load").addEventListener("click", async () => {
   $("model").disabled = true; // the progress line belongs to this model
   try {
     if (device === "webgpu" && !navigator.gpu) throw new Error("WebGPU is not available in this browser (Chrome / Edge, Safari 26+).");
-    if (MODELS[model].kind !== "bekko") transformers ??= await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0");
+    if (!["bekko", "bonsai"].includes(MODELS[model].kind)) transformers ??= await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0");
     const files = new Map();
     setStatus(`Fetching ${MODELS[model].id}…`, 0);
     const loaded = await loadEngine({
@@ -215,6 +225,12 @@ async function run() {
   $("run").disabled = true;
   $("results").innerHTML = "";
   $("usage").innerHTML = `<span class="chip">Running…</span>`;
+  const started = performance.now();
+  const timer = engine.spec.kind === "bonsai" ? setInterval(() => {
+    $("usage").innerHTML = `<span class="chip">Running on CPU… ${Math.floor((performance.now() - started) / 1000)} s</span>`;
+  }, 1000) : null;
+  $("model").disabled = true;
+  $("device").disabled = true;
   try {
     const request = { state: parseState($("state").value), questions: JSON.parse($("questions").value) };
     const resp = await engine.answer(request, { temperature: Number($("temp").value), mode, calibrate: $("calibrate").checked, orders: Number($("orders").value) });
@@ -223,6 +239,9 @@ async function run() {
     $("usage").innerHTML = `<span class="err">${esc(e.message)}</span>`;
     console.error(e);
   } finally {
+    clearInterval(timer);
+    $("model").disabled = false;
+    $("device").disabled = false;
     $("run").disabled = false;
   }
 }
