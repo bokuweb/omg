@@ -4,7 +4,7 @@ import { BONSAI_MODEL as spec } from "./bonsai.js";
 import { cachedFetch, idbCache } from "./cache.js";
 import { preparePlan } from "./bonsai-core.js";
 
-let wasm, labels, resident = null;
+let wasm, gpu, labels, resident = null;
 const layout = JSON.stringify(spec.layout);
 const progress = info => self.postMessage({ progress: info });
 function check(rc) {
@@ -12,6 +12,7 @@ function check(rc) {
   return rc;
 }
 function tokenize(text, special) {
+  if (gpu) return gpu.tokenize(text, special);
   const n = check(wasm.ccall("bonsai_tokenize", "number", ["string", "number", "number"], [text, new TextEncoder().encode(text).length, Number(special)]));
   const ptr = wasm._bonsai_tokens();
   return Array.from(wasm.HEAP32.subarray(ptr / 4, ptr / 4 + n));
@@ -22,7 +23,8 @@ function withIds(ids, fn) {
   try { wasm.HEAP32.set(ids, ptr / 4); return fn(ptr); }
   finally { wasm._free(ptr); }
 }
-function rowsFor(plan) {
+async function rowsFor(plan) {
+  if (gpu) return gpu.rowsFor(plan);
   // Validate every branch before spending CPU time on any of them.
   const { prefix, branches } = preparePlan(plan, tokenize, labels.length);
   const warm = resident && resident.length === prefix.length && resident.every((id, i) => id === prefix[i]);
@@ -48,6 +50,12 @@ async function dispatch(data) {
       throw Error(`Incomplete Bonsai model: expected ${spec.bytes} bytes, got ${blob.size}. Retry the download.`);
     }
     progress({ status: "ready" });
+    if (data.device === "webgpu") {
+      const { createGpuBonsai } = await import("./bonsai-gpu.js");
+      gpu = await createGpuBonsai(blob, `${data.base}${spec.file}`, progress);
+      labels = gpu.labels;
+      return {};
+    }
     wasm = await createBonsai();
     wasm.FS.mkdir("/model");
     wasm.FS.mount(wasm.WORKERFS, { blobs: [{ name: "bonsai.gguf", data: blob }] }, "/model");
@@ -59,7 +67,7 @@ async function dispatch(data) {
     });
     return {};
   }
-  if (!wasm || !labels) throw Error("Load Bonsai before running a request");
+  if ((!wasm && !gpu) || !labels) throw Error("Load Bonsai before running a request");
   const { request, options: { temperature = 1, calibrate = false, orders = 1 } } = data;
   if (!Number.isFinite(temperature) || temperature <= 0) throw Error("Temperature must be positive and finite");
   const start = performance.now(), json = JSON.stringify(request), cap = labels.length;
@@ -68,11 +76,11 @@ async function dispatch(data) {
   // Preflight both plans, including every question, before any inference.
   preparePlan(plan, tokenize, cap);
   if (cfPrefix) preparePlan({ prefix: cfPrefix, branches: plan.branches }, tokenize, cap);
-  const base = cfPrefix ? rowsFor({ prefix: cfPrefix, branches: plan.branches }) : null;
-  const r = rowsFor(plan), rows = JSON.stringify(r.rows), baseRows = base ? JSON.stringify(base.rows) : undefined;
+  const base = cfPrefix ? await rowsFor({ prefix: cfPrefix, branches: plan.branches }) : null;
+  const r = await rowsFor(plan), rows = JSON.stringify(r.rows), baseRows = base ? JSON.stringify(base.rows) : undefined;
   const second = JSON.parse(omg.plan_second(json, layout, orders, cap, rows, temperature, baseRows));
-  const base2 = cfPrefix && second.branches.length ? rowsFor({ prefix: cfPrefix, branches: second.branches }) : null;
-  const r2 = second.branches.length ? rowsFor({ prefix: plan.prefix, branches: second.branches }) : null;
+  const base2 = cfPrefix && second.branches.length ? await rowsFor({ prefix: cfPrefix, branches: second.branches }) : null;
+  const r2 = second.branches.length ? await rowsFor({ prefix: plan.prefix, branches: second.branches }) : null;
   const tokens = r.tokens + (base?.tokens ?? 0) + (r2?.tokens ?? 0) + (base2?.tokens ?? 0);
   const forwards = r.forwards + (base?.forwards ?? 0) + (r2?.forwards ?? 0) + (base2?.forwards ?? 0);
   const out = JSON.parse(omg.answer(json, layout, orders, cap, rows, r2 ? JSON.stringify(r2.rows) : undefined, temperature, spec.id, tokens, baseRows, base2 ? JSON.stringify(base2.rows) : undefined));

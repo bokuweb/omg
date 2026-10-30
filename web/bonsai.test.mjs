@@ -53,7 +53,8 @@ test('worker routes concurrent replies and recovers from request validation erro
   const engine = await loadBonsai({ spec: BONSAI_MODEL, omg });
   const worker = FakeWorker.instances.at(-1);
   assert.equal(worker.calls[0].base, bonsaiBase(BONSAI_MODEL));
-  assert.equal(engine.device, 'cpu');
+  assert.equal(engine.device, 'webgpu');
+  assert.equal(worker.calls[0].device, 'webgpu');
   assert.deepEqual(engine.render({ state: '日本語' }).request, { state: '日本語' });
   const a = engine.answer({ state: 'a' }), b = engine.answer({ state: 'b' });
   const rejected = assert.rejects(a, /context/);
@@ -74,4 +75,11 @@ test('worker crash rejects in-flight and future requests without hanging the UI'
   await rejected;
   await assert.rejects(engine.answer({}), /out of memory/);
   assert.ok(worker.terminated);
+});
+
+test('explicit CPU selection reaches the worker', async t => {
+  mockWorker(t);
+  const engine = await loadBonsai({ spec: BONSAI_MODEL, omg, device: 'cpu' });
+  assert.equal(engine.device, 'cpu');
+  assert.equal(FakeWorker.instances.at(-1).calls[0].device, 'cpu');
 });

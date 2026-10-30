@@ -133,7 +133,7 @@ function setStatus(text, pct, cls = "") {
 const engines = new Map();
 let loading = false;
 
-const selectedDevice = () => MODELS[$("model").value].kind === "bekko" ? $("device").value : MODELS[$("model").value].kind === "bonsai" ? "cpu" : "webgpu";
+const selectedDevice = () => ["bekko", "bonsai"].includes(MODELS[$("model").value].kind) ? $("device").value : "webgpu";
 const engineKey = () => `${$("model").value}:${selectedDevice()}`;
 let previousKind;
 function selectModel() {
@@ -141,8 +141,10 @@ function selectModel() {
   const bekko = MODELS[model].kind === "bekko";
   const bonsai = MODELS[model].kind === "bonsai";
   if (bonsai && previousKind !== "bonsai") $("calibrate").checked = false;
+  if (previousKind !== MODELS[model].kind) $("device").value = bonsai && navigator.gpu ? "webgpu" : "cpu";
+  $("device").querySelector('[value="webgpu"]').textContent = bekko ? "WebGPU + CPU fallback" : "WebGPU";
   previousKind = MODELS[model].kind;
-  $("device-field").hidden = !bekko;
+  $("device-field").hidden = !bekko && !bonsai;
   $("bekko-note").hidden = !bekko;
   $("bonsai-note").hidden = !bonsai;
   $("orders").disabled = bekko;
@@ -198,6 +200,7 @@ $("load").addEventListener("click", async () => {
           for (const [a, b] of files.values()) { l += a; t += b; }
           setStatus(`${info.file}  ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB`, t ? (100 * l) / t : 0);
         } else if (info.status === "ready") setStatus("Initializing…", 100);
+        else if (info.message) setStatus(info.message, 100);
       },
     });
     engines.set(key, loaded);
@@ -227,7 +230,7 @@ async function run() {
   $("usage").innerHTML = `<span class="chip">Running…</span>`;
   const started = performance.now();
   const timer = engine.spec.kind === "bonsai" ? setInterval(() => {
-    $("usage").innerHTML = `<span class="chip">Running on CPU… ${Math.floor((performance.now() - started) / 1000)} s</span>`;
+    $("usage").innerHTML = `<span class="chip">Running on ${engine.device === "cpu" ? "CPU" : "GPU"}… ${Math.floor((performance.now() - started) / 1000)} s</span>`;
   }, 1000) : null;
   $("model").disabled = true;
   $("device").disabled = true;

@@ -380,7 +380,7 @@ export async function loadEngine({ transformers, model = "gemma-3-1b", device = 
   if (!spec) throw new Error(`unknown model ${model}`);
   if (spec.kind === "bonsai") {
     navigator.storage?.persist?.().catch(() => {});
-    return loadBonsai({ spec, onProgress, modelBase, omg });
+    return loadBonsai({ spec, device, onProgress, modelBase, omg });
   }
   if (spec.kind === "bekko") {
     navigator.storage?.persist?.().catch(() => {});

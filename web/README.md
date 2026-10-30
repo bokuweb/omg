@@ -58,27 +58,48 @@ Choose `bonsai-2-4b-wasm`, click **Load model**, then **Run**. Opening
 [`?model=bonsai-2-4b-wasm`](https://bokuweb.github.io/omg/?model=bonsai-2-4b-wasm)
 selects Bonsai and the short Japanese support-ticket example. The pinned
 official `PTQ1_0` GGUF downloads 950 MB once and is cached in IndexedDB.
-The runtime requires WebAssembly SIMD and enough browser memory for the
-weights and context. It runs on one CPU thread in a Web Worker, without
-WebGPU, a local server, or cross-origin isolation headers. Inputs stay local.
-CPU inference can take minutes; the page shows elapsed time while it runs.
-**Calibrate** defaults to off for Bonsai, and higher **Orders** add inference
-work. On an M4 / 16 GB Mac, the two-question Japanese sample with calibration
-enabled took 182 seconds in Chromium (single CPU thread).
-A single uncalibrated question took 61 seconds cold and 29 seconds with the
-resident state; its label logits matched those from the two-question run.
+**WebGPU** is selected by default when the browser exposes it. **Device** also
+lets you select **CPU (WASM)**, which requires WebAssembly SIMD and runs on one
+thread. Both backends run in a Web Worker with the same cached model, without
+a local inference server or cross-origin isolation headers. Inputs stay local.
+The GPU runtime is experimental; GPU availability, memory limits and numerical
+results depend on the browser and device. If GPU initialization fails, select
+CPU and load again. CPU inference can take minutes. **Calibrate** defaults to
+off for Bonsai, and higher **Orders** add inference work.
 
-This compiles the same pinned Prism llama.cpp revision as the native Bonsai
-backend with Emscripten. `bonsai-native/bridge.cpp` loads Blob-backed weights
-via WORKERFS, uses a 2,048-token context and 64-token batches, and keeps the
-state in sequence 0. Each question copies that prefix into sequence 1;
-question branches do not see one another. Only **Shared** mode is supported.
-The complete state plus each rendered question must fit the context; longer
-requests are rejected before decoding. The Rust/WASM core owns the ChatML
-layout, validation, option orders, two-pass choices, calibration and response
-probabilities, as in the native runtime. Uncalibrated requests with the same
-state reuse the resident prefix. Calibration currently recomputes its
-content-free baseline on each run.
+On an M4 / 16 GB Mac in Chromium, the two-question Japanese sample with
+calibration off and one order took 4.68 seconds on WebGPU, 3.04 seconds when
+reusing the resident state, and 64.6 seconds on CPU. These are single-run
+inference measurements excluding model download and initialization. Both
+backends chose the same answers, with probability differences up to 0.72
+percentage points; this is a smoke check, not a quality evaluation. The CPU
+sample with calibration enabled took 182 seconds. A single uncalibrated CPU
+question took 61 seconds cold and 29 seconds with resident state.
+
+The WebGPU adapter loads a pinned external
+[upstream browser runtime](https://huggingface.co/spaces/webml-community/ternary-bonsai-2-hermes-webgpu/tree/621e20782f208660f4f58283c2ce58430020f243)
+(`assets/qwen35-vision-Kzp5MMIJ.js`, SHA-256
+`00c1a72a962a84fee17000a6b1d18b24d75033e56d59996fc504b7c57cfc6488`).
+It verifies the digest before applying a small full-vocabulary-logits adapter
+and executing it. This uses private upstream APIs and requires network access
+or the browser HTTP cache on reload. The upstream bundle has no declared
+license and is referenced externally rather than copied into this repository.
+Updating it requires rechecking the adapter and GPU results. Recurrent state
+is restored from a prefix snapshot before each question so branches remain
+isolated.
+
+The CPU backend compiles the same pinned Prism llama.cpp revision as the
+native Bonsai backend with Emscripten. `bonsai-native/bridge.cpp` loads
+Blob-backed weights via WORKERFS, uses a 2,048-token context and 64-token
+batches, and keeps the state in sequence 0. Each question copies that prefix
+into sequence 1; question branches do not see one another.
+
+Only **Shared** mode is supported by either backend. The complete state plus
+each rendered question must fit the context; longer requests are rejected
+before decoding. The Rust/WASM core owns the ChatML layout, validation, option
+orders, two-pass choices, calibration and response probabilities, as in the
+native runtime. Uncalibrated requests with the same state reuse the resident
+prefix. Calibration currently recomputes its content-free baseline on each run.
 
 For local weights, use `?model=bonsai-2-4b-wasm&base=/models/` and place the
 file at `web/models/bonsai-2-4b-wasm/Ternary-Bonsai-2-4B-PTQ1_0.gguf`.
